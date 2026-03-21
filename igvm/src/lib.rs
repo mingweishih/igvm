@@ -3116,7 +3116,13 @@ impl IgvmFile {
                     platform_headers.push(header);
                     variable_headers = new_slice;
                 }
-                Some(header) if IGVM_VHT_RANGE_INIT.contains(&header.typ.0) => {
+                Some(header)
+                    if IGVM_VHT_RANGE_INIT.contains(&header.typ.0)
+                        && header.typ
+                            != IgvmVariableHeaderType::IGVM_VHT_CORIM_DOCUMENT
+                        && header.typ
+                            != IgvmVariableHeaderType::IGVM_VHT_CORIM_SIGNATURE =>
+                {
                     match parsing_stage {
                         VariableHeaderParsingStage::Platform => {
                             parsing_stage = VariableHeaderParsingStage::Initialization
@@ -3141,6 +3147,46 @@ impl IgvmFile {
                     }
 
                     initialization_headers.push(header);
+                }
+                // CoRIM headers (0x104, 0x105) fall in the init range
+                // (0x101..=0x200) but are semantically directive headers.
+                // Route them to the directive parser.
+                Some(header)
+                    if header.typ
+                        == IgvmVariableHeaderType::IGVM_VHT_CORIM_DOCUMENT
+                        || header.typ
+                            == IgvmVariableHeaderType::IGVM_VHT_CORIM_SIGNATURE =>
+                {
+                    match parsing_stage {
+                        VariableHeaderParsingStage::Platform
+                        | VariableHeaderParsingStage::Initialization => {
+                            parsing_stage = VariableHeaderParsingStage::Directive
+                        }
+                        VariableHeaderParsingStage::Directive => {}
+                    }
+
+                    let compatibility_mask_to_platforms =
+                        |mask: u32| -> Option<IgvmPlatformType> { mask_map.get(&mask).copied() };
+
+                    let (header, new_slice) = IgvmDirectiveHeader::new_from_binary_split(
+                        revision,
+                        variable_headers,
+                        file_data,
+                        file_data_start,
+                        compatibility_mask_to_platforms,
+                    )
+                    .map_err(Error::InvalidBinaryDirectiveHeader)?;
+
+                    variable_headers = new_slice;
+
+                    if let Some(mask) = header.compatibility_mask() {
+                        if mask & filter_mask == 0 {
+                            // Skip this header, does not apply to the isolation filter
+                            continue;
+                        }
+                    }
+
+                    directive_headers.push(header);
                 }
                 Some(header) if IGVM_VHT_RANGE_DIRECTIVE.contains(&header.typ.0) => {
                     match parsing_stage {
